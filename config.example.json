@@ -1,0 +1,36 @@
+{
+  "near": {
+    "host": "localhost",
+    "port": 1883,
+    "username": null,
+    "password": null,
+    "client_id": "mr-bridge-near"
+  },
+  "far": {
+    "host": "mqtt.example.com",
+    "port": 8883,
+    "username": "remote_user",
+    "password": "remote_password",
+    "client_id": "mr-bridge-far"
+  },
+  "rules": [
+    {
+      "topic": "sensors/#",
+      "direction": "near_to_far",
+      "logging": true,
+      "qos": 1
+    },
+    {
+      "topic": "commands/#",
+      "direction": "far_to_near",
+      "logging": true,
+      "qos": 1
+    },
+    {
+      "topic": "status/+",
+      "direction": "wherever",
+      "logging": false,
+      "qos": 0
+    }
+  ]
+}
