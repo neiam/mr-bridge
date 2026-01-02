@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  # MQTT Bridge
+  mr-bridge:
+    image: ghcr.io/<username>/mr-bridge:latest
+    container_name: mr-bridge
+    restart: unless-stopped
+    volumes:
+      # Mount your configuration file
+      - ./config.toml:/app/config.toml:ro
+    environment:
+      - MR_BRIDGE_CONFIG=/app/config.toml
+      - RUST_LOG=info
+      # Optional: Enable reload functionality
+      # - MR_BRIDGE_RELOAD_TOPIC=admin/reload
+      # - MR_BRIDGE_RELOAD_BROKER=near
+    # If connecting to local MQTT brokers, use host networking
+    # network_mode: host
+    # Or use a custom network if brokers are in containers
+    networks:
+      - mqtt-network
+
+  # Example: Local MQTT broker (optional)
+  mosquitto-near:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto-near
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto-near.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - mqtt-network
+
+  # Example: Remote MQTT broker (optional)
+  mosquitto-far:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto-far
+    restart: unless-stopped
+    ports:
+      - "1884:1883"
+    volumes:
+      - ./mosquitto-far.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - mqtt-network
+
+networks:
+  mqtt-network:
+    driver: bridge

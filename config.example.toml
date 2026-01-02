@@ -1,0 +1,58 @@
+# Example configuration for mr-bridge
+# This file demonstrates all available configuration options
+
+# Near broker configuration (local/internal broker)
+[near]
+host = "localhost"
+port = 1883
+# Optional authentication
+# username = "user1"
+# password = "pass1"
+# Optional client ID (will be auto-generated if not specified)
+# client_id = "mr-bridge-near"
+
+# Far broker configuration (remote/external broker)
+[far]
+host = "mqtt.example.com"
+port = 1883
+# Optional authentication
+# username = "user2"
+# password = "pass2"
+# Optional client ID (will be auto-generated if not specified)
+# client_id = "mr-bridge-far"
+
+# Bridge rules - define which topics to bridge and in which direction
+[[rules]]
+# Forward all sensor data from near to far
+topic = "sensors/#"
+direction = "near_to_far"
+logging = true
+qos = 1
+
+[[rules]]
+# Forward commands from far to near
+topic = "commands/#"
+direction = "far_to_near"
+logging = true
+qos = 1
+
+[[rules]]
+# Bidirectional bridging for status updates
+topic = "status/+"
+direction = "wherever"
+logging = false
+qos = 0
+
+[[rules]]
+# Bridge specific temperature topic
+topic = "home/living/temperature"
+direction = "near_to_far"
+logging = true
+qos = 0
+
+[[rules]]
+# Bridge all home automation topics bidirectionally
+topic = "home/+/control"
+direction = "wherever"
+logging = true
+qos = 1
