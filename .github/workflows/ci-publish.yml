@@ -17,10 +17,13 @@ jobs:
   # Format check
   fmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
-      
+
+      # ARC's default runner image ships no compilers
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,10 +35,13 @@ jobs:
   # Clippy linting
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
-      
+
+      # ARC's default runner image ships no compilers
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -65,10 +71,13 @@ jobs:
   # Run tests
   test:
     name: Test Suite
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
-      
+
+      # ARC's default runner image ships no compilers
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       
@@ -96,7 +105,7 @@ jobs:
   # Build and push Docker image
   docker:
     name: Build and Push Docker Image
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     needs: [fmt, clippy, test]
     permissions:
       contents: read
