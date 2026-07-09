@@ -17,10 +17,20 @@ pub struct MqttBrokerConfig {
     /// payloads such as Zigbee2MQTT's `bridge/definitions`; default 5 MiB.
     #[serde(default = "default_max_packet_size")]
     pub max_packet_size: usize,
+    /// Keep-alive interval in seconds. rumqttc declares the link dead ("last
+    /// pingreq isn't acked") if a PINGRESP doesn't return within it, so raise it
+    /// for a high-latency or flaky far link to avoid needless reconnects; lower
+    /// it to detect a dead peer faster. Default 30.
+    #[serde(default = "default_keepalive_secs")]
+    pub keepalive_secs: u64,
 }
 
 fn default_mqtt_port() -> u16 {
     1883
+}
+
+fn default_keepalive_secs() -> u64 {
+    30
 }
 
 fn default_max_packet_size() -> usize {

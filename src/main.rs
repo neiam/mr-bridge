@@ -81,87 +81,60 @@ impl Bridge {
         matches!(cache.get(&fp), Some(t) if t.elapsed() < self.dedup_window)
     }
 
-    async fn subscribe_to_topics(&self) -> Result<()> {
+    /// Subscribe the NEAR client to every topic it should receive (rules going
+    /// near→far or both ways, plus the reload topic if it lives on near). Called
+    /// on every (re)connect, since rumqttc does not replay subscriptions after a
+    /// dropped connection — without this the bridge reconnects but goes silent.
+    async fn subscribe_near(&self) -> Result<()> {
         let config = self.config.read().await;
-
         for rule in &config.rules {
-            match rule.direction {
-                Direction::NearToFar => {
-                    info!(
-                        "Subscribing to '{}' on NEAR broker (forwarding to FAR)",
-                        rule.topic
-                    );
-                    self.near_client
-                        .subscribe(&rule.topic, rule.qos())
-                        .await
-                        .context(format!(
-                            "Failed to subscribe to '{}' on near broker",
-                            rule.topic
-                        ))?;
-                }
-                Direction::FarToNear => {
-                    info!(
-                        "Subscribing to '{}' on FAR broker (forwarding to NEAR)",
-                        rule.topic
-                    );
-                    self.far_client
-                        .subscribe(&rule.topic, rule.qos())
-                        .await
-                        .context(format!(
-                            "Failed to subscribe to '{}' on far broker",
-                            rule.topic
-                        ))?;
-                }
-                Direction::Wherever => {
-                    info!(
-                        "Subscribing to '{}' on BOTH brokers (bidirectional)",
-                        rule.topic
-                    );
-                    self.near_client
-                        .subscribe(&rule.topic, rule.qos())
-                        .await
-                        .context(format!(
-                            "Failed to subscribe to '{}' on near broker",
-                            rule.topic
-                        ))?;
-                    self.far_client
-                        .subscribe(&rule.topic, rule.qos())
-                        .await
-                        .context(format!(
-                            "Failed to subscribe to '{}' on far broker",
-                            rule.topic
-                        ))?;
-                }
+            if matches!(rule.direction, Direction::NearToFar | Direction::Wherever) {
+                info!("Subscribing NEAR to '{}'", rule.topic);
+                self.near_client
+                    .subscribe(&rule.topic, rule.qos())
+                    .await
+                    .context(format!("subscribe near '{}'", rule.topic))?;
             }
         }
-
-        // Subscribe to reload topic if configured
         if let Some(reload_topic) = &self.reload_topic {
-            match self.reload_broker.as_str() {
-                "near" => {
-                    info!(
-                        "Subscribing to reload topic '{}' on NEAR broker",
-                        reload_topic
-                    );
-                    self.near_client
-                        .subscribe(reload_topic, QoS::AtLeastOnce)
-                        .await
-                        .context("Failed to subscribe to reload topic")?;
-                }
-                "far" => {
-                    info!(
-                        "Subscribing to reload topic '{}' on FAR broker",
-                        reload_topic
-                    );
-                    self.far_client
-                        .subscribe(reload_topic, QoS::AtLeastOnce)
-                        .await
-                        .context("Failed to subscribe to reload topic")?;
-                }
-                _ => warn!("Invalid reload_broker value: {}", self.reload_broker),
+            if self.reload_broker == "near" {
+                self.near_client
+                    .subscribe(reload_topic, QoS::AtLeastOnce)
+                    .await
+                    .context("subscribe near reload topic")?;
             }
         }
+        Ok(())
+    }
 
+    /// Subscribe the FAR client to every topic it should receive (rules going
+    /// far→near or both ways, plus the reload topic if it lives on far).
+    async fn subscribe_far(&self) -> Result<()> {
+        let config = self.config.read().await;
+        for rule in &config.rules {
+            if matches!(rule.direction, Direction::FarToNear | Direction::Wherever) {
+                info!("Subscribing FAR to '{}'", rule.topic);
+                self.far_client
+                    .subscribe(&rule.topic, rule.qos())
+                    .await
+                    .context(format!("subscribe far '{}'", rule.topic))?;
+            }
+        }
+        if let Some(reload_topic) = &self.reload_topic {
+            if self.reload_broker == "far" {
+                self.far_client
+                    .subscribe(reload_topic, QoS::AtLeastOnce)
+                    .await
+                    .context("subscribe far reload topic")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-subscribe both brokers (used on config reload).
+    async fn subscribe_to_topics(&self) -> Result<()> {
+        self.subscribe_near().await?;
+        self.subscribe_far().await?;
         Ok(())
     }
 
@@ -236,18 +209,19 @@ impl Bridge {
                         }
 
                         self.mark_forwarded(&publish.topic, &publish.payload);
-                        self.far_client
-                            .publish(
-                                &publish.topic,
-                                rule.qos(),
-                                publish.retain,
-                                publish.payload.clone(),
-                            )
-                            .await
-                            .context(format!(
-                                "Failed to forward message to far broker: {}",
-                                publish.topic
-                            ))?;
+                        // Non-blocking: if the FAR queue is full (far broker
+                        // unreachable) we drop rather than block, so a FAR outage
+                        // can't stall — and thereby kill — the NEAR connection.
+                        // Current state is re-sent once FAR is back and publishing
+                        // resumes.
+                        if let Err(e) = self.far_client.try_publish(
+                            &publish.topic,
+                            rule.qos(),
+                            publish.retain,
+                            publish.payload.clone(),
+                        ) {
+                            debug!("dropping NEAR→FAR '{}' (far unavailable): {}", publish.topic, e);
+                        }
                     }
                     Direction::FarToNear => {
                         // Ignore messages from near when rule is FarToNear
@@ -297,18 +271,16 @@ impl Bridge {
                         }
 
                         self.mark_forwarded(&publish.topic, &publish.payload);
-                        self.near_client
-                            .publish(
-                                &publish.topic,
-                                rule.qos(),
-                                publish.retain,
-                                publish.payload.clone(),
-                            )
-                            .await
-                            .context(format!(
-                                "Failed to forward message to near broker: {}",
-                                publish.topic
-                            ))?;
+                        // Non-blocking (see handle_near_publish): drop rather than
+                        // block the FAR loop if the NEAR queue is full.
+                        if let Err(e) = self.near_client.try_publish(
+                            &publish.topic,
+                            rule.qos(),
+                            publish.retain,
+                            publish.payload.clone(),
+                        ) {
+                            debug!("dropping FAR→NEAR '{}' (near unavailable): {}", publish.topic, e);
+                        }
                     }
                     Direction::NearToFar => {
                         // Ignore messages from far when rule is NearToFar
@@ -326,25 +298,29 @@ impl Bridge {
 
     async fn run(self, near_eventloop: EventLoop, far_eventloop: EventLoop) -> Result<()> {
         info!("Starting MQTT bridge");
-
-        // Subscribe to all configured topics
-        self.subscribe_to_topics().await?;
-
         info!("Bridge is running");
 
-        // Poll each broker's event loop in its own task. Keeping them
-        // independent means a burst on one side (e.g. Zigbee2MQTT dumping its
-        // retained topics when we subscribe to `#`) can't stall the other side's
-        // poll loop — the failure mode that let the far broker's keepalive lapse
-        // and reset the connection.
+        // Poll each broker's event loop in its own task. Keeping them independent
+        // means a burst or an outage on one side can't stall the other's poll
+        // loop. Each task (re)subscribes on every ConnAck so it recovers cleanly
+        // from a dropped connection, and logs a lost connection only once per
+        // outage instead of on every 5s retry.
         let bridge = Arc::new(self);
 
         let near_task = {
             let bridge = Arc::clone(&bridge);
             let mut eventloop = near_eventloop;
             tokio::spawn(async move {
+                let mut reported_error = false;
                 loop {
                     match eventloop.poll().await {
+                        Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                            info!("NEAR connected — subscribing");
+                            reported_error = false;
+                            if let Err(e) = bridge.subscribe_near().await {
+                                error!("NEAR subscribe failed: {:#}", e);
+                            }
+                        }
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
                             if let Err(e) = bridge.handle_near_publish(publish).await {
                                 error!("Error handling NEAR publish: {:#}", e);
@@ -353,7 +329,10 @@ impl Bridge {
                         Ok(Event::Incoming(packet)) => debug!("NEAR incoming: {:?}", packet),
                         Ok(Event::Outgoing(_)) => {}
                         Err(e) => {
-                            error!("NEAR connection error: {}", e);
+                            if !reported_error {
+                                warn!("NEAR connection lost ({}) — retrying every 5s", e);
+                                reported_error = true;
+                            }
                             tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }
@@ -365,8 +344,16 @@ impl Bridge {
             let bridge = Arc::clone(&bridge);
             let mut eventloop = far_eventloop;
             tokio::spawn(async move {
+                let mut reported_error = false;
                 loop {
                     match eventloop.poll().await {
+                        Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                            info!("FAR connected — subscribing");
+                            reported_error = false;
+                            if let Err(e) = bridge.subscribe_far().await {
+                                error!("FAR subscribe failed: {:#}", e);
+                            }
+                        }
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
                             if let Err(e) = bridge.handle_far_publish(publish).await {
                                 error!("Error handling FAR publish: {:#}", e);
@@ -375,7 +362,10 @@ impl Bridge {
                         Ok(Event::Incoming(packet)) => debug!("FAR incoming: {:?}", packet),
                         Ok(Event::Outgoing(_)) => {}
                         Err(e) => {
-                            error!("FAR connection error: {}", e);
+                            if !reported_error {
+                                warn!("FAR connection lost ({}) — retrying every 5s", e);
+                                reported_error = true;
+                            }
                             tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }
@@ -399,14 +389,14 @@ fn create_mqtt_client(config: &MqttBrokerConfig, name: &str) -> Result<(AsyncCli
         mqttoptions.set_credentials(username, password);
     }
 
-    mqttoptions.set_keep_alive(Duration::from_secs(30));
+    mqttoptions.set_keep_alive(Duration::from_secs(config.keepalive_secs));
     // rumqttc's 10 KiB default drops connections on large retained payloads
     // (e.g. Zigbee2MQTT bridge/definitions). Raise it for both directions.
     mqttoptions.set_max_packet_size(config.max_packet_size, config.max_packet_size);
 
     info!(
-        "Creating {} MQTT client: {}:{} (id: {}, max_packet_size: {})",
-        name, config.host, config.port, config.client_id, config.max_packet_size
+        "Creating {} MQTT client: {}:{} (id: {}, keepalive: {}s, max_packet_size: {})",
+        name, config.host, config.port, config.client_id, config.keepalive_secs, config.max_packet_size
     );
 
     // Larger request queue so a retained-message burst doesn't backpressure the

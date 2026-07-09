@@ -20,6 +20,10 @@ port = 1883
 # Optional max MQTT packet size in bytes (default 5 MiB). Raise if you bridge
 # very large retained payloads (e.g. Zigbee2MQTT bridge/definitions).
 # max_packet_size = 5242880
+# Optional keep-alive in seconds (default 30). Raise for a high-latency or flaky
+# link to avoid "last pingreq isn't acked" reconnects; lower to detect a dead
+# peer faster.
+# keepalive_secs = 30
 
 # Far broker configuration (remote/external broker)
 [far]
