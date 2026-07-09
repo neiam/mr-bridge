@@ -471,9 +471,18 @@ mod tests {
     #[test]
     fn fingerprint_is_stable_and_sensitive() {
         let base = Bridge::fingerprint("zigbee2mqtt/light", b"{\"state\":\"ON\"}");
-        assert_eq!(base, Bridge::fingerprint("zigbee2mqtt/light", b"{\"state\":\"ON\"}"));
-        assert_ne!(base, Bridge::fingerprint("zigbee2mqtt/other", b"{\"state\":\"ON\"}"));
-        assert_ne!(base, Bridge::fingerprint("zigbee2mqtt/light", b"{\"state\":\"OFF\"}"));
+        assert_eq!(
+            base,
+            Bridge::fingerprint("zigbee2mqtt/light", b"{\"state\":\"ON\"}")
+        );
+        assert_ne!(
+            base,
+            Bridge::fingerprint("zigbee2mqtt/other", b"{\"state\":\"ON\"}")
+        );
+        assert_ne!(
+            base,
+            Bridge::fingerprint("zigbee2mqtt/light", b"{\"state\":\"OFF\"}")
+        );
     }
 
     #[test]
