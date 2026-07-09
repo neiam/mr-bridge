@@ -220,7 +220,10 @@ impl Bridge {
                             publish.retain,
                             publish.payload.clone(),
                         ) {
-                            debug!("dropping NEAR→FAR '{}' (far unavailable): {}", publish.topic, e);
+                            debug!(
+                                "dropping NEAR→FAR '{}' (far unavailable): {}",
+                                publish.topic, e
+                            );
                         }
                     }
                     Direction::FarToNear => {
@@ -279,7 +282,10 @@ impl Bridge {
                             publish.retain,
                             publish.payload.clone(),
                         ) {
-                            debug!("dropping FAR→NEAR '{}' (near unavailable): {}", publish.topic, e);
+                            debug!(
+                                "dropping FAR→NEAR '{}' (near unavailable): {}",
+                                publish.topic, e
+                            );
                         }
                     }
                     Direction::NearToFar => {
@@ -396,7 +402,12 @@ fn create_mqtt_client(config: &MqttBrokerConfig, name: &str) -> Result<(AsyncCli
 
     info!(
         "Creating {} MQTT client: {}:{} (id: {}, keepalive: {}s, max_packet_size: {})",
-        name, config.host, config.port, config.client_id, config.keepalive_secs, config.max_packet_size
+        name,
+        config.host,
+        config.port,
+        config.client_id,
+        config.keepalive_secs,
+        config.max_packet_size
     );
 
     // Larger request queue so a retained-message burst doesn't backpressure the
