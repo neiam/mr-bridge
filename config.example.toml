@@ -10,6 +10,9 @@ port = 1883
 # password = "pass1"
 # Optional client ID (will be auto-generated if not specified)
 # client_id = "mr-bridge-near"
+# Optional max MQTT packet size in bytes (default 5 MiB). Raise if you bridge
+# very large retained payloads (e.g. Zigbee2MQTT bridge/definitions).
+# max_packet_size = 5242880
 
 # Far broker configuration (remote/external broker)
 [far]

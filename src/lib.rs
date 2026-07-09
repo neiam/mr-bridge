@@ -12,10 +12,19 @@ pub struct MqttBrokerConfig {
     pub password: Option<String>,
     #[serde(default = "default_client_id")]
     pub client_id: String,
+    /// Maximum MQTT packet size in bytes for incoming and outgoing packets.
+    /// rumqttc defaults to 10 KiB, which is too small for large retained
+    /// payloads such as Zigbee2MQTT's `bridge/definitions`; default 5 MiB.
+    #[serde(default = "default_max_packet_size")]
+    pub max_packet_size: usize,
 }
 
 fn default_mqtt_port() -> u16 {
     1883
+}
+
+fn default_max_packet_size() -> usize {
+    5 * 1024 * 1024
 }
 
 fn default_client_id() -> String {

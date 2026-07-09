@@ -326,10 +326,13 @@ fn create_mqtt_client(config: &MqttBrokerConfig, name: &str) -> Result<(AsyncCli
     }
 
     mqttoptions.set_keep_alive(Duration::from_secs(30));
+    // rumqttc's 10 KiB default drops connections on large retained payloads
+    // (e.g. Zigbee2MQTT bridge/definitions). Raise it for both directions.
+    mqttoptions.set_max_packet_size(config.max_packet_size, config.max_packet_size);
 
     info!(
-        "Creating {} MQTT client: {}:{} (id: {})",
-        name, config.host, config.port, config.client_id
+        "Creating {} MQTT client: {}:{} (id: {}, max_packet_size: {})",
+        name, config.host, config.port, config.client_id, config.max_packet_size
     );
 
     Ok(AsyncClient::new(mqttoptions, 100))
