@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use mr_bridge::{Args, BridgeConfig, Direction, MqttBrokerConfig};
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, Publish, QoS};
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -14,6 +15,11 @@ struct Bridge {
     config_path: std::path::PathBuf,
     reload_topic: Option<String>,
     reload_broker: String,
+    /// Fingerprints of recently-forwarded messages, for echo suppression. Empty
+    /// / unused when `dedup_window` is zero. Guarded by a plain mutex — only ever
+    /// held for the duration of a hash-map op, never across an `.await`.
+    dedup: Mutex<HashMap<u64, Instant>>,
+    dedup_window: Duration,
 }
 
 impl Bridge {
@@ -29,12 +35,50 @@ impl Bridge {
         let bridge = Self {
             near_client,
             far_client,
-            config: Arc::new(RwLock::new(config)),
             config_path: args.config.clone(),
             reload_topic: args.reload_topic.clone(),
             reload_broker: args.reload_broker.clone(),
+            dedup: Mutex::new(HashMap::new()),
+            dedup_window: Duration::from_secs(config.dedup_window_secs),
+            config: Arc::new(RwLock::new(config)),
         };
         Ok((bridge, near_eventloop, far_eventloop))
+    }
+
+    /// Fingerprint a message by topic + payload.
+    fn fingerprint(topic: &str, payload: &[u8]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        topic.hash(&mut h);
+        payload.hash(&mut h);
+        h.finish()
+    }
+
+    /// Record that we just forwarded this message, so its echo can be recognised.
+    /// No-op when loop prevention is disabled.
+    fn mark_forwarded(&self, topic: &str, payload: &[u8]) {
+        if self.dedup_window.is_zero() {
+            return;
+        }
+        let now = Instant::now();
+        let mut cache = self.dedup.lock().unwrap();
+        // Opportunistically drop expired entries when the map grows.
+        if cache.len() > 8192 {
+            cache.retain(|_, t| now.duration_since(*t) < self.dedup_window);
+        }
+        cache.insert(Self::fingerprint(topic, payload), now);
+    }
+
+    /// True if this message matches one we forwarded within the window — i.e.
+    /// it's the echo of our own forward bouncing back, and must not be forwarded
+    /// again (that's the loop). Always false when loop prevention is disabled.
+    fn is_echo(&self, topic: &str, payload: &[u8]) -> bool {
+        if self.dedup_window.is_zero() {
+            return false;
+        }
+        let fp = Self::fingerprint(topic, payload);
+        let cache = self.dedup.lock().unwrap();
+        matches!(cache.get(&fp), Some(t) if t.elapsed() < self.dedup_window)
     }
 
     async fn subscribe_to_topics(&self) -> Result<()> {
@@ -169,6 +213,13 @@ impl Bridge {
             }
         }
 
+        // Loop prevention: if this is the echo of something we just forwarded
+        // FAR→NEAR, don't forward it back to FAR.
+        if self.is_echo(&publish.topic, &publish.payload) {
+            debug!("NEAR: dropping echoed message: {}", publish.topic);
+            return Ok(());
+        }
+
         // Find matching rules for this topic
         for rule in &config.rules {
             if matches_topic(&rule.topic, &publish.topic) {
@@ -184,6 +235,7 @@ impl Bridge {
                             debug!("Payload: {:?}", String::from_utf8_lossy(&publish.payload));
                         }
 
+                        self.mark_forwarded(&publish.topic, &publish.payload);
                         self.far_client
                             .publish(
                                 &publish.topic,
@@ -222,6 +274,13 @@ impl Bridge {
             }
         }
 
+        // Loop prevention: if this is the echo of something we just forwarded
+        // NEAR→FAR, don't forward it back to NEAR.
+        if self.is_echo(&publish.topic, &publish.payload) {
+            debug!("FAR: dropping echoed message: {}", publish.topic);
+            return Ok(());
+        }
+
         // Find matching rules for this topic
         for rule in &config.rules {
             if matches_topic(&rule.topic, &publish.topic) {
@@ -237,6 +296,7 @@ impl Bridge {
                             debug!("Payload: {:?}", String::from_utf8_lossy(&publish.payload));
                         }
 
+                        self.mark_forwarded(&publish.topic, &publish.payload);
                         self.near_client
                             .publish(
                                 &publish.topic,
@@ -407,6 +467,14 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprint_is_stable_and_sensitive() {
+        let base = Bridge::fingerprint("zigbee2mqtt/light", b"{\"state\":\"ON\"}");
+        assert_eq!(base, Bridge::fingerprint("zigbee2mqtt/light", b"{\"state\":\"ON\"}"));
+        assert_ne!(base, Bridge::fingerprint("zigbee2mqtt/other", b"{\"state\":\"ON\"}"));
+        assert_ne!(base, Bridge::fingerprint("zigbee2mqtt/light", b"{\"state\":\"OFF\"}"));
+    }
 
     #[test]
     fn test_topic_matching() {

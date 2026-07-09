@@ -1,6 +1,13 @@
 # Example configuration for mr-bridge
 # This file demonstrates all available configuration options
 
+# Loop prevention (seconds). 0 = off (default). Set > 0 when bridging overlapping
+# topics in both directions (e.g. direction = "wherever" on "#"): a forwarded
+# message's echo is dropped within this window instead of being forwarded again.
+# Keep it short; identical topic+payload messages repeated within the window are
+# de-duplicated. Must be a top-level key (before the [near]/[far]/[[rules]] tables).
+# dedup_window_secs = 10
+
 # Near broker configuration (local/internal broker)
 [near]
 host = "localhost"

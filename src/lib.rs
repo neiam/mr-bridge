@@ -70,9 +70,21 @@ impl BridgeRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeConfig {
+    /// Loop-prevention window in seconds. When > 0, a forwarded message is
+    /// fingerprinted (topic + payload) and its echo — the copy the destination
+    /// broker delivers back to our own subscription — is dropped instead of
+    /// being forwarded again, which is what lets you bridge overlapping topics
+    /// bidirectionally (e.g. `direction = "wherever"` on `#`) without a storm.
+    /// 0 (default) disables it; use it only for symmetric/overlapping bridges.
+    #[serde(default = "default_dedup_window_secs")]
+    pub dedup_window_secs: u64,
     pub near: MqttBrokerConfig,
     pub far: MqttBrokerConfig,
     pub rules: Vec<BridgeRule>,
+}
+
+fn default_dedup_window_secs() -> u64 {
+    0
 }
 
 impl BridgeConfig {
