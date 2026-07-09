@@ -9,9 +9,7 @@ use tracing::{debug, error, info, warn};
 
 struct Bridge {
     near_client: AsyncClient,
-    near_eventloop: EventLoop,
     far_client: AsyncClient,
-    far_eventloop: EventLoop,
     config: Arc<RwLock<BridgeConfig>>,
     config_path: std::path::PathBuf,
     reload_topic: Option<String>,
@@ -19,23 +17,24 @@ struct Bridge {
 }
 
 impl Bridge {
-    async fn new(args: &Args) -> Result<Self> {
+    /// Build the bridge plus the two broker event loops (kept separate so each
+    /// can be polled in its own task).
+    async fn new(args: &Args) -> Result<(Self, EventLoop, EventLoop)> {
         let config =
             BridgeConfig::load_from_file(&args.config).context("Failed to load configuration")?;
 
         let (near_client, near_eventloop) = create_mqtt_client(&config.near, "near")?;
         let (far_client, far_eventloop) = create_mqtt_client(&config.far, "far")?;
 
-        Ok(Self {
+        let bridge = Self {
             near_client,
-            near_eventloop,
             far_client,
-            far_eventloop,
             config: Arc::new(RwLock::new(config)),
             config_path: args.config.clone(),
             reload_topic: args.reload_topic.clone(),
             reload_broker: args.reload_broker.clone(),
-        })
+        };
+        Ok((bridge, near_eventloop, far_eventloop))
     }
 
     async fn subscribe_to_topics(&self) -> Result<()> {
@@ -265,7 +264,7 @@ impl Bridge {
         Ok(())
     }
 
-    async fn run(mut self) -> Result<()> {
+    async fn run(self, near_eventloop: EventLoop, far_eventloop: EventLoop) -> Result<()> {
         info!("Starting MQTT bridge");
 
         // Subscribe to all configured topics
@@ -273,48 +272,63 @@ impl Bridge {
 
         info!("Bridge is running");
 
-        loop {
-            tokio::select! {
-                event = self.near_eventloop.poll() => {
-                    match event {
+        // Poll each broker's event loop in its own task. Keeping them
+        // independent means a burst on one side (e.g. Zigbee2MQTT dumping its
+        // retained topics when we subscribe to `#`) can't stall the other side's
+        // poll loop — the failure mode that let the far broker's keepalive lapse
+        // and reset the connection.
+        let bridge = Arc::new(self);
+
+        let near_task = {
+            let bridge = Arc::clone(&bridge);
+            let mut eventloop = near_eventloop;
+            tokio::spawn(async move {
+                loop {
+                    match eventloop.poll().await {
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
-                            if let Err(e) = self.handle_near_publish(publish).await {
+                            if let Err(e) = bridge.handle_near_publish(publish).await {
                                 error!("Error handling NEAR publish: {:#}", e);
                             }
                         }
-                        Ok(Event::Incoming(packet)) => {
-                            debug!("NEAR incoming: {:?}", packet);
-                        }
-                        Ok(Event::Outgoing(_)) => {
-                            // Ignore outgoing events
-                        }
+                        Ok(Event::Incoming(packet)) => debug!("NEAR incoming: {:?}", packet),
+                        Ok(Event::Outgoing(_)) => {}
                         Err(e) => {
                             error!("NEAR connection error: {}", e);
                             tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }
                 }
-                event = self.far_eventloop.poll() => {
-                    match event {
+            })
+        };
+
+        let far_task = {
+            let bridge = Arc::clone(&bridge);
+            let mut eventloop = far_eventloop;
+            tokio::spawn(async move {
+                loop {
+                    match eventloop.poll().await {
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
-                            if let Err(e) = self.handle_far_publish(publish).await {
+                            if let Err(e) = bridge.handle_far_publish(publish).await {
                                 error!("Error handling FAR publish: {:#}", e);
                             }
                         }
-                        Ok(Event::Incoming(packet)) => {
-                            debug!("FAR incoming: {:?}", packet);
-                        }
-                        Ok(Event::Outgoing(_)) => {
-                            // Ignore outgoing events
-                        }
+                        Ok(Event::Incoming(packet)) => debug!("FAR incoming: {:?}", packet),
+                        Ok(Event::Outgoing(_)) => {}
                         Err(e) => {
                             error!("FAR connection error: {}", e);
                             tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }
                 }
-            }
+            })
+        };
+
+        // Both loop forever; surface it if either task dies unexpectedly.
+        tokio::select! {
+            r = near_task => r.context("near event-loop task ended")?,
+            r = far_task => r.context("far event-loop task ended")?,
         }
+        Ok(())
     }
 }
 
@@ -335,7 +349,9 @@ fn create_mqtt_client(config: &MqttBrokerConfig, name: &str) -> Result<(AsyncCli
         name, config.host, config.port, config.client_id, config.max_packet_size
     );
 
-    Ok(AsyncClient::new(mqttoptions, 100))
+    // Larger request queue so a retained-message burst doesn't backpressure the
+    // forwarding path (default was 100, too small for a full z2m dump).
+    Ok(AsyncClient::new(mqttoptions, 1024))
 }
 
 /// Check if a message topic matches a subscription topic (with wildcards)
@@ -382,8 +398,8 @@ async fn main() -> Result<()> {
         );
     }
 
-    let bridge = Bridge::new(&args).await?;
-    bridge.run().await?;
+    let (bridge, near_eventloop, far_eventloop) = Bridge::new(&args).await?;
+    bridge.run(near_eventloop, far_eventloop).await?;
 
     Ok(())
 }
