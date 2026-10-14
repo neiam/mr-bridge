@@ -137,6 +137,34 @@ qos = 0
   - `wherever`: Bidirectional bridging (forward in both directions)
 - **`logging`** (optional, default: false): Log each bridged message
 - **`qos`** (optional, default: 0): Quality of Service level (0, 1, or 2)
+- **`remap`** (optional): Rewrite the topic prefix on the way through, as
+  `remap = { from = "a/b/", to = "c/" }` — `a/b/x/y` is published on the other
+  broker as `c/x/y`. A topic without the prefix passes through unchanged. Plain
+  prefixes, not wildcards, so `from` can also be a whole topic to rename it.
+  Only on `near_to_far` / `far_to_near` rules; for both directions, write one
+  rule each way with opposite rewrites.
+- **`retain`** (optional): Override the retain flag on forwarded messages.
+  Unset keeps the source's flag. Set `true` when the source can't retain (e.g.
+  RabbitMQ, for anything published over AMQP) but the destination should hold
+  the last value for subscribers that connect later.
+
+### Example: Home Assistant discovery from a broker you can't publish `homeassistant/` on
+
+```toml
+# Discovery configs published under "board/ha/" on the far broker appear in
+# HA's default prefix on the near one, retained so a restarted HA has them.
+[[rules]]
+topic = "board/ha/#"
+direction = "far_to_near"
+retain = true
+remap = { from = "board/ha/", to = "homeassistant/" }
+
+# HA's birth message, renamed so the far side can hear it.
+[[rules]]
+topic = "homeassistant/status"
+direction = "near_to_far"
+remap = { from = "homeassistant/status", to = "board/publish/ha" }
+```
 
 ## Usage
 

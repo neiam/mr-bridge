@@ -198,26 +198,30 @@ impl Bridge {
             if matches_topic(&rule.topic, &publish.topic) {
                 match rule.direction {
                     Direction::NearToFar | Direction::Wherever => {
+                        let topic = rule.forward_topic(&publish.topic);
                         if rule.logging {
                             info!(
-                                "NEAR→FAR: {} ({} bytes, QoS {:?})",
+                                "NEAR→FAR: {} -> {} ({} bytes, QoS {:?})",
                                 publish.topic,
+                                topic,
                                 publish.payload.len(),
                                 publish.qos
                             );
                             debug!("Payload: {:?}", String::from_utf8_lossy(&publish.payload));
                         }
 
-                        self.mark_forwarded(&publish.topic, &publish.payload);
+                        // The echo comes back on the topic we published to, which
+                        // a remap makes different from the one this arrived on.
+                        self.mark_forwarded(&topic, &publish.payload);
                         // Non-blocking: if the FAR queue is full (far broker
                         // unreachable) we drop rather than block, so a FAR outage
                         // can't stall — and thereby kill — the NEAR connection.
                         // Current state is re-sent once FAR is back and publishing
                         // resumes.
                         if let Err(e) = self.far_client.try_publish(
-                            &publish.topic,
+                            &topic,
                             rule.qos(),
-                            publish.retain,
+                            rule.forward_retain(publish.retain),
                             publish.payload.clone(),
                         ) {
                             debug!(
@@ -263,23 +267,27 @@ impl Bridge {
             if matches_topic(&rule.topic, &publish.topic) {
                 match rule.direction {
                     Direction::FarToNear | Direction::Wherever => {
+                        let topic = rule.forward_topic(&publish.topic);
                         if rule.logging {
                             info!(
-                                "FAR→NEAR: {} ({} bytes, QoS {:?})",
+                                "FAR→NEAR: {} -> {} ({} bytes, QoS {:?})",
                                 publish.topic,
+                                topic,
                                 publish.payload.len(),
                                 publish.qos
                             );
                             debug!("Payload: {:?}", String::from_utf8_lossy(&publish.payload));
                         }
 
-                        self.mark_forwarded(&publish.topic, &publish.payload);
+                        // The echo comes back on the topic we published to, which
+                        // a remap makes different from the one this arrived on.
+                        self.mark_forwarded(&topic, &publish.payload);
                         // Non-blocking (see handle_near_publish): drop rather than
                         // block the FAR loop if the NEAR queue is full.
                         if let Err(e) = self.near_client.try_publish(
-                            &publish.topic,
+                            &topic,
                             rule.qos(),
-                            publish.retain,
+                            rule.forward_retain(publish.retain),
                             publish.payload.clone(),
                         ) {
                             debug!(

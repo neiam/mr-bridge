@@ -70,3 +70,11 @@ topic = "home/+/control"
 direction = "wherever"
 logging = true
 qos = 1
+
+[[rules]]
+# Rename on the way through: "upstream/ha/x" arrives on near as
+# "homeassistant/x". Retained on near, since the far side may not retain.
+topic = "upstream/ha/#"
+direction = "far_to_near"
+retain = true
+remap = { from = "upstream/ha/", to = "homeassistant/" }
